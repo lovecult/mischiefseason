@@ -475,7 +475,8 @@ win:
     msys64.exe
     del msys64.exe
 
-    bash -c "pacman-key --init && pacman-key --populate && pacman -Syu --noconfirm && pacman -S --needed --noconfirm make diffutils gperf nasm perl pkgconf"
+    bash -c "pacman-key --init && pacman-key --populate && pacman -Syu --noconfirm"
+bash -c "pacman -S --needed --noconfirm make diffutils mingw-w64-x86_64-gperf mingw-w64-x86_64-nasm mingw-w64-x86_64-perl mingw-w64-x86_64-pkgconf"
 """, 'ThirdParty')
 
 stage('python', """

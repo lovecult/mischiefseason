@@ -21,6 +21,7 @@ jobs:
       - name: Download source
         uses: actions/checkout@v4
         with:
+          repository: AyuGram/AyuGramDesktop
           ref: v7.2.9
           submodules: recursive
           path: tdesktop

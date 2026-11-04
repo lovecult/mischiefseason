@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AyuGram/AyuGramDesktop
-          ref: v7.2.9
+          ref: dev
           submodules: recursive
           path: tdesktop
 

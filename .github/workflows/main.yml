@@ -1,4 +1,3 @@
-
 name: Build mischiefseason for Windows
 
 on:
@@ -31,13 +30,17 @@ jobs:
         with:
           python-version: '3.10'
 
-     - name: Install ATL
-          shell: pwsh
-          run: |
-            $vs = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            $path = & $vs -latest -products * -property installationPath
-            $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
-            & $installer modify --installPath "$path" --add Microsoft.VisualStudio.Component.VC.ATL --quiet --norestart --wait 
+      - name: Install ATL
+        shell: pwsh
+        run: |
+          $vs = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $path = & $vs -latest -products * -property installationPath
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+          & $installer modify --installPath "$path" --add Microsoft.VisualStudio.Component.VC.ATL --quiet --norestart --wait
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install Visual Studio ATL component"
+          }
+
       - name: Initialize MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:

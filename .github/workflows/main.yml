@@ -21,7 +21,7 @@ jobs:
       - name: Download source
         uses: actions/checkout@v4
         with:
-          repository: AyuGram/AyuGramDesktop
+          repository: lovecult/mischiefseason
           ref: dev
           submodules: recursive
           path: tdesktop

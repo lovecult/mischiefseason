@@ -99,7 +99,7 @@ jobs:
       - name: Build Release
         shell: pwsh
         working-directory: tdesktop
-        run: cmake --build out --config Release --target Telegram --parallel 4
+        run: cmake --build out --config Release --target Telegram --parallel 2 -- /p:CL_MPCount=2
 
       - name: Verify and collect executable
         shell: pwsh

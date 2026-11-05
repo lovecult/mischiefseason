@@ -10,12 +10,79 @@ jobs:
   build:
     runs-on: windows-2025
     timeout-minutes: 360
+    env:
+      # 64-bit compiler (32-bit cl.exe was the cause of "out of heap space")
+      PreferredToolArchitecture: x64
+      # How many compiler processes run at once. If you still get
+      # "out of heap space" errors, change "3" to "2".
+      CL_JOBS: "3"
 
     steps:
+      - name: Remember job start time
+        shell: pwsh
+        run: |
+          "JOB_START=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Create time-limit helper
+        shell: pwsh
+        run: |
+          $helper = @'
+          param(
+            [Parameter(Mandatory = $true)][string]$Command,
+            [int]$ReserveMinutes = 35
+          )
+          $jobStart = [int64]$env:JOB_START
+          $deadline = $jobStart + (360 * 60) - ($ReserveMinutes * 60)
+          $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+          $remaining = $deadline - $now
+          if ($remaining -lt 120) {
+            Write-Host "Not enough time left in this job. Progress is saved, re-run the workflow to continue."
+            exit 124
+          }
+          Write-Host "Time budget for this step: $([math]::Floor($remaining / 60)) min"
+          $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c $Command" -PassThru -NoNewWindow
+          $null = $p.Handle
+          if (-not $p.WaitForExit([int]($remaining * 1000))) {
+            Write-Host "Time budget exhausted, stopping the step. Progress will be saved, re-run the workflow to continue."
+            & taskkill /PID $p.Id /T /F | Out-Null
+            exit 124
+          }
+          exit $p.ExitCode
+          '@
+          Set-Content -Path "$env:RUNNER_TEMP\limited.ps1" -Value $helper -Encoding utf8
+
       - name: Prepare folders
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path ThirdParty, Libraries, tdesktop | Out-Null
+
+      - name: Increase pagefile
+        uses: al-cheb/configure-pagefile-action@v1.4
+        continue-on-error: true
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          disk-root: "D:"
+
+      - name: Restore libraries cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: libs-win64-v1-${{ github.run_id }}
+          restore-keys: |
+            libs-win64-v1-
+
+      - name: Restore source and build cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: tdesktop
+          key: src-win64-v1-${{ github.run_id }}
+          restore-keys: |
+            src-win64-v1-
 
       - name: Download source
         uses: actions/checkout@v4
@@ -24,6 +91,7 @@ jobs:
           ref: dev
           submodules: recursive
           path: tdesktop
+          clean: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,16 +109,18 @@ jobs:
           $updated = [regex]::Replace($content, $pattern, "", 1)
 
           if ($updated -eq $content) {
-            throw "Could not find the Breakpad dump_syms commands to patch"
+            if ($content -match 'gyp dump_syms') {
+              throw "Could not find the Breakpad dump_syms commands to patch"
+            }
+            Write-Host "Breakpad already patched, nothing to do."
+          } else {
+            [System.IO.File]::WriteAllText(
+              $file,
+              $updated,
+              [System.Text.UTF8Encoding]::new($false)
+            )
+            Write-Host "Breakpad dump_syms build disabled. Required runtime libraries remain enabled."
           }
-
-          [System.IO.File]::WriteAllText(
-            $file,
-            $updated,
-            [System.Text.UTF8Encoding]::new($false)
-          )
-
-          Write-Host "Breakpad dump_syms build disabled. Required runtime libraries remain enabled."
 
       - name: Initialize MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -64,44 +134,73 @@ jobs:
           $file = "tdesktop/Telegram/CMakeLists.txt"
           $content = Get-Content $file -Raw
 
-          if ($content -notmatch 'set\(output_name "AyuGram"\)') {
+          if ($content.Contains('set(output_name "mischiefseason")')) {
+            Write-Host "CMakeLists.txt already branded."
+          } elseif ($content.Contains('set(output_name "AyuGram")')) {
+            $content = $content.Replace(
+              'set(output_name "AyuGram")',
+              'set(output_name "mischiefseason")'
+            )
+            Set-Content -Path $file -Value $content -NoNewline
+          } else {
             throw "Could not find AyuGram executable name in CMakeLists.txt"
           }
 
-          $content = $content.Replace(
-            'set(output_name "AyuGram")',
-            'set(output_name "mischiefseason")'
-          )
-
-          Set-Content -Path $file -Value $content -NoNewline
-
-          foreach ($file in @(
+          foreach ($rc in @(
             "tdesktop/Telegram/Resources/winrc/Telegram.rc",
             "tdesktop/Telegram/Resources/winrc/Updater.rc"
           )) {
-            if (Test-Path $file) {
-              $content = Get-Content $file -Raw
-              $content = $content.Replace("AyuGram Desktop", "mischiefseason")
-              $content = $content.Replace("AyuGram", "mischiefseason")
-              Set-Content -Path $file -Value $content -NoNewline
+            if (Test-Path $rc) {
+              $old = Get-Content $rc -Raw
+              $new = $old.Replace("AyuGram Desktop", "mischiefseason")
+              $new = $new.Replace("AyuGram", "mischiefseason")
+              if ($new -ne $old) {
+                Set-Content -Path $rc -Value $new -NoNewline
+              }
             }
           }
 
       - name: Prepare libraries
-        shell: cmd
-        run: tdesktop\Telegram\build\prepare\win.bat
+        id: prepare
+        if: hashFiles(format('Libraries/.prepared-{0}', hashFiles('tdesktop/Telegram/build/prepare/**'))) == ''
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP\limited.ps1" -Command "tdesktop\Telegram\build\prepare\win.bat"
+
+      - name: Mark libraries as prepared
+        if: steps.prepare.outcome == 'success'
+        shell: pwsh
+        run: |
+          New-Item -ItemType File -Force -Path "Libraries/.prepared-${{ hashFiles('tdesktop/Telegram/build/prepare/**') }}" | Out-Null
+
+      - name: Save libraries cache
+        if: always() && steps.prepare.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: libs-win64-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Configure project
+        if: hashFiles(format('Libraries/.prepared-{0}', hashFiles('tdesktop/Telegram/build/prepare/**'))) != ''
         shell: cmd
         working-directory: tdesktop\Telegram
         run: configure.bat x64 -D TDESKTOP_API_ID=2040 -D TDESKTOP_API_HASH=b18441a1ff607e10a989891a5462e627
 
       - name: Build Release
+        id: build
+        if: hashFiles(format('Libraries/.prepared-{0}', hashFiles('tdesktop/Telegram/build/prepare/**'))) != ''
+        continue-on-error: true
         shell: pwsh
         working-directory: tdesktop
-        run: cmake --build out --config Release --target Telegram --parallel 2 -- /p:CL_MPCount=2
+        run: |
+          & "$env:RUNNER_TEMP\limited.ps1" -Command "cmake --build out --config Release --target Telegram --parallel 1 -- /p:PreferredToolArchitecture=x64 /p:CL_MPCount=$env:CL_JOBS"
 
       - name: Verify and collect executable
+        if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
           $candidates = @(
@@ -134,8 +233,24 @@ jobs:
           Write-Host "Size: $([math]::Round($exe.Length / 1MB, 2)) MB"
 
       - name: Upload executable
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: mischiefseason-windows-x64
           path: artifacts/mischiefseason.exe
           if-no-files-found: error
+
+      - name: Save source and build cache
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: tdesktop
+          key: src-win64-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report status
+        if: always() && steps.build.outcome != 'success'
+        shell: pwsh
+        run: |
+          Write-Host "::error::The build is not finished yet. Progress was saved to the cache. Run the workflow again to continue from where it stopped."
+          exit 1
